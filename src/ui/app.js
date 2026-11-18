@@ -152,7 +152,7 @@ function renderGrid() {
           ? `<img src="${esc(a.iconUrl)}" alt="" draggable="false" />`
           : `<div class="fallback" style="background:${esc(a.accent || '#9aa6b2')}">${esc(initialOf(a.label))}</div>`}
       </div>
-      <div class="name">${esc(a.label)}</div>
+      <div class="name" translate="no">${esc(a.label)}</div>
       <div class="meta">${a.running ? '运行中' : `v${esc(a.versionName)}${a.lastLaunchAt ? ' · ' + relTime(a.lastLaunchAt) : ''}`}</div>
       <div class="open-hint">${a.running ? '切换到前台' : '打开'}</div>
     </div>
@@ -1033,6 +1033,7 @@ function fillSettings(s) {
   if ($('setDataGB')) $('setDataGB').value = String(Number(eng.dataPartitionGB || 0));
   if ($('setFastDns')) $('setFastDns').checked = eng.fastDns !== false;
   if ($('setLocale')) $('setLocale').value = eng.locale || 'zh-CN';
+  if ($('setUiLanguage') && api.i18nGet) api.i18nGet().then((r) => { $('setUiLanguage').value = (r && r.setting) || 'auto'; }).catch(() => {});
   if ($('setChineseIme')) $('setChineseIme').checked = eng.chineseIme !== false;
   if ($('setKeepSnapshot')) $('setKeepSnapshot').checked = eng.keepSnapshot !== false;
   $('setDisplayMode').value = d.mode === 'fullscreen' ? 'fullscreen' : 'window';
@@ -1315,6 +1316,10 @@ function bindSettings() {
   }
   if ($('setFastDns')) {
     $('setFastDns').addEventListener('change', (e) => save({ engine: { fastDns: e.target.checked } }));
+  }
+  if ($('setUiLanguage') && api.i18nSet) {
+    // Switching UI language: the main process saves it and reloads every page.
+    $('setUiLanguage').addEventListener('change', (e) => { api.i18nSet(e.target.value).catch(() => {}); });
   }
   if ($('setLocale')) {
     $('setLocale').addEventListener('change', async (e) => {

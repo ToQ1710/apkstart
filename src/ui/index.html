@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
 <title>ApkStart</title>
+<script src="i18n-dict.js"></script>
+<script src="i18n.js"></script>
 <link rel="stylesheet" href="style.css" />
 <link rel="stylesheet" href="theme.css" />
 </head>
@@ -142,6 +144,19 @@
       </button>
     </header>
     <div class="modal-body">
+      <div class="group" id="languageGroup">
+        <div class="group-title">界面语言</div>
+        <div class="field">
+          <select id="setUiLanguage">
+            <option value="auto">跟随系统</option>
+            <option value="vi" translate="no">Tiếng Việt</option>
+            <option value="en" translate="no">English</option>
+            <option value="zh" translate="no">简体中文</option>
+          </select>
+          <span class="sub">切换后立即生效：主界面、托盘菜单、系统通知和对话框都会换成所选语言。</span>
+        </div>
+      </div>
+
       <div class="group" id="runtimeGroup">
         <div class="group-title">运行时与环境</div>
         <div class="field">
@@ -397,6 +412,7 @@
             <option value="zh-CN">简体中文（推荐）</option>
             <option value="zh-TW">繁體中文</option>
             <option value="en-US">English（镜像原生）</option>
+            <option value="vi-VN" translate="no">Tiếng Việt</option>
             <option value="ja-JP">日本語</option>
             <option value="ko-KR">한국어</option>
           </select>

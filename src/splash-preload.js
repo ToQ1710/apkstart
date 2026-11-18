@@ -1,6 +1,9 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 
+// UI language (en / vi / zh): read synchronously so the page renders translated from the first paint.
+try { contextBridge.exposeInMainWorld('apkLang', ipcRenderer.sendSync('i18n:lang') || 'en'); } catch (_) { /* ignore */ }
+
 contextBridge.exposeInMainWorld('apkstartSplash', {
   version: () => ipcRenderer.invoke('splash:version'),
   isFirstRun: () => ipcRenderer.invoke('splash:isFirstRun'),

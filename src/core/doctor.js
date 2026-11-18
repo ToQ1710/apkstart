@@ -262,7 +262,9 @@ function chooseProfile({
     snapshot: true,
     lite: !!lite,
     // 无加速的纯软件模拟在 Windows 上确实能起来，但 Android 14 冷启动可能 5-10 分钟
-    bootTimeoutMs: accelOk ? 240000 : 600000,
+    // 有加速时首次「全量引导」也可能超过 4 分钟：Windows 10 上的 WHPX 明显比 AEHD 慢，
+    // Android 14 冷启动实测 5~8 分钟；4 分钟就杀掉会让它永远起不来、一轮轮重试。
+    bootTimeoutMs: accelOk ? 600000 : 900000,
     emulatorVersion,
     host,
   };

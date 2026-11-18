@@ -592,10 +592,85 @@ class EmulatorEngine {
     const bin = path.join(path.dirname(this.locate().emulatorExe), 'bin64');
     const exe = path.join(bin, 'resize2fs.exe');
     if (!fs.existsSync(exe)) throw new Error('缺少 resize2fs.exe');
+    // guest 挂载过一次之后，resize2fs 会拒绝干活（"Please run 'e2fsck -f' first"），
+    // 于是 64MB 的 /data 永远长不大 → APEX 解压写满 → 开机卡死、adb 一直 offline。
+    // 先强制检查一遍（-f 强制、-y 自动修复）；退出码 <4 表示没有错误或已修复。
+    const fsck = path.join(bin, 'e2fsck.exe');
+    if (fs.existsSync(fsck)) {
+      const c = spawnSync(fsck, ['-fy', img], {
+        cwd: bin, windowsHide: true, encoding: 'utf8', timeout: 600000,
+      });
+      if (c.status === null || c.status >= 4) {
+        throw new Error(`e2fsck 失败: ${(c.stderr || c.stdout || '').trim().slice(-300) || c.status}`);
+      }
+    }
+    // 从 64MB 长到 6GB 以上要写几十 MB 的 inode 表，慢盘上 100 秒以上，给足时间
     const r = spawnSync(exe, [img], {
-      cwd: bin, windowsHide: true, encoding: 'utf8', timeout: 180000,
+      cwd: bin, windowsHide: true, encoding: 'utf8', timeout: 900000,
     });
     if (r.status !== 0) throw new Error(`resize2fs 失败: ${(r.stderr || '').trim() || r.status}`);
+  }
+
+  /** 异步跑 bin64 里的 e2fsprogs 工具：不阻塞主进程（同步跑几分钟会被 Windows 判成「未响应」直接关掉） */
+  _e2fsToolAsync(name, args, timeout) {
+    const bin = path.join(path.dirname(this.locate().emulatorExe), 'bin64');
+    const exe = path.join(bin, name);
+    if (!fs.existsSync(exe)) return Promise.reject(new Error(`缺少 ${name}`));
+    return new Promise((resolve) => {
+      execFile(exe, args, { cwd: bin, windowsHide: true, encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout, stderr) => resolve({
+          status: err ? (typeof err.code === 'number' ? err.code : null) : 0,
+          out: `${stdout || ''}${stderr || ''}`.trim(),
+        }));
+    });
+  }
+
+  /**
+   * 开机前把 /data 准备好（异步版）。
+   *
+   * ensureDataPartition() 是同步的（测试和 ensureAvd 都依赖它），但从 64MB 长到 12GB
+   * 要 e2fsck + resize2fs 好几分钟；在主进程里同步跑，窗口卡死，Windows 弹「未响应」
+   * 后直接结束 ApkStart，resize2fs 被拦腰打断，/data 永远停在 64MB。
+   * 所以开机流程先在这里把重活异步做完；之后同步的 ensureDataPartition 看到文件系统
+   * 已经够大，就直接返回。
+   */
+  async prepareDataPartitionAsync(dataMB = 4096, onLog = () => {}) {
+    const emulatorExe = this.locate().emulatorExe;
+    if (!emulatorExe || !fs.existsSync(emulatorExe)) return { ok: false, reason: 'no-emulator' };
+    const avdDir = path.join(this.provisioner.ensureDirs().avdHome, `${AVD_NAME}.avd`);
+    fs.mkdirSync(avdDir, { recursive: true });
+    const img = path.join(avdDir, 'userdata-qemu.img');
+    const wantBytes = Math.max(1024, Math.round(dataMB || 4096)) * 1024 * 1024;
+    let size = 0;
+    try { size = fs.statSync(img).size; } catch (_) { /* 不存在 */ }
+    const fresh = !(size > 0 && userdata.hasExt4Superblock(img));
+    if (!fresh) {
+      const fsBytes = userdata.fsBytes(img);
+      if (size >= wantBytes && fsBytes >= Math.min(size, wantBytes) * 0.95) return { ok: true, skipped: true };
+    }
+    onLog('扩容中…');
+    try {
+      if (fresh) {
+        fs.rmSync(img, { force: true });
+        fs.rmSync(`${img}.qcow2`, { force: true });
+        fs.writeFileSync(img, userdata.buildEmptyExt4({ sizeMB: 64, encrypt: false }));
+      } else {
+        userdata.clearEncryptFlag(img);
+      }
+      if (size < wantBytes || fresh) this._qemuImg('resize', img, wantBytes);
+      const c = await this._e2fsToolAsync('e2fsck.exe', ['-fy', img], 600000);
+      if (c.status === null || c.status >= 4) throw new Error(`e2fsck 失败: ${c.out.slice(-300) || c.status}`);
+      const r = await this._e2fsToolAsync('resize2fs.exe', [img], 900000);
+      if (r.status !== 0) throw new Error(`resize2fs 失败: ${r.out.slice(-300) || r.status}`);
+      userdata.setEncryptFlag(img);
+      const grown = userdata.fsBytes(img);
+      this.log(`userdata 异步准备完成：文件 ${wantBytes}，文件系统 ${grown}`);
+      return { ok: true, fsBytes: grown };
+    } catch (e) {
+      try { userdata.setEncryptFlag(img); } catch (_) { /* ignore */ }
+      this.log(`扩容 userdata 失败（继续用现有分区）：${e.message}`);
+      return { ok: false, error: e.message };
+    }
   }
 
   /** emulator 依赖这些环境变量定位 SDK / AVD；中文路径一律转 8.3 短路径 */
@@ -837,6 +912,14 @@ class EmulatorEngine {
    *    而覆盖层里的文件系统没有 root 权限改不了。这种时候必须如实返回「需要重置」，
    *    不能再像以前那样返回成功 —— 用户会以为扩好了，装 50GB 游戏依旧半路失败。
    */
+  /** 「立即扩容」按钮用的异步版：重活在 prepareDataPartitionAsync 里做，主进程不卡 */
+  async resizeDataPartitionAsync(dataMB) {
+    const dir = path.join(this.provisioner.paths().avdHome, `${AVD_NAME}.avd`);
+    const img = path.join(dir, 'userdata-qemu.img');
+    if (!this._hasDataOverlay(img)) await this.prepareDataPartitionAsync(dataMB);
+    return this.resizeDataPartition(dataMB);
+  }
+
   resizeDataPartition(dataMB) {
     const dir = path.join(this.provisioner.paths().avdHome, `${AVD_NAME}.avd`);
     const img = path.join(dir, 'userdata-qemu.img');
@@ -1315,6 +1398,12 @@ class EmulatorEngine {
       // 第 2 轮（比如换后端后端口冲突）会被误诊成同一个崩溃。
       const logStart = this._log.length;
       onLog(`启动运行时（第 ${i + 1}/${variants.length} 次：${plan.label}）…`);
+
+      // /data 的重活（e2fsck / resize2fs，可能几分钟）先异步做完，别让主进程卡成「未响应」
+      if (i === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        try { await this.prepareDataPartitionAsync(plan.dataMB, onLog); } catch (_) { /* 同步路径兜底 */ }
+      }
 
       // eslint-disable-next-line no-await-in-loop
       const avd = this.ensureAvd({

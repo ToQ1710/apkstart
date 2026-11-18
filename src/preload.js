@@ -1,6 +1,9 @@
 'use strict';
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// UI language (en / vi / zh): read synchronously so the page renders translated from the first paint.
+try { contextBridge.exposeInMainWorld('apkLang', ipcRenderer.sendSync('i18n:lang') || 'en'); } catch (_) { /* ignore */ }
+
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 
 contextBridge.exposeInMainWorld('apkstart', {
@@ -19,6 +22,8 @@ contextBridge.exposeInMainWorld('apkstart', {
   revealApkDir: () => invoke('apk:reveal'),
   openDir: () => invoke('dialog:openDir'),
 
+  i18nGet: () => invoke('i18n:get'),
+  i18nSet: (lang) => invoke('i18n:set', lang),
   getSettings: () => invoke('settings:get'),
   setSettings: (patch) => invoke('settings:set', patch),
   restoreSystemApps: () => invoke('settings:restoreSystem'),

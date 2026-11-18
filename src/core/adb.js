@@ -1031,9 +1031,14 @@ class AdbClient {
    * 这里做的是能做的部分：把应用级 locale 和时区设好，让界面立刻中文、时间正确。
    */
   async ensureChineseLocale(locale = 'zh-CN') {
+    // 时区跟着系统语言走（越南语 → 胡志明市），未知语言保持原来的上海时区
+    const TZ = {
+      'vi-VN': 'Asia/Ho_Chi_Minh', 'ja-JP': 'Asia/Tokyo', 'ko-KR': 'Asia/Seoul', 'zh-TW': 'Asia/Taipei',
+    };
+    const tz = TZ[locale] || 'Asia/Shanghai';
     const cmds = [
       'settings put system system_locales ' + locale,
-      'setprop persist.sys.timezone Asia/Shanghai',
+      'setprop persist.sys.timezone ' + tz,
       // 24 小时制 + 中文常见的日期格式
       'settings put system time_12_24 24',
     ];

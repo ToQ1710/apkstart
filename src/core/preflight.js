@@ -113,6 +113,11 @@ async function collect({ accel = null } = {}) {
 
   // 选「主显卡」：优先非 Microsoft Basic Display / 非虚拟显示适配器
   const usable = gpus.filter((g) => g && g.Name && !/microsoft basic|remote display|virtual display/i.test(g.Name));
+  // 多显卡机器（核显 + 独显，如 Intel UHD 630 + Quadro）WMI 往往把核显排第一；
+  // 按核显选会给出 swangle（CPU 渲染），Unity 类游戏一画就 0xC0000005 崩。独显优先。
+  const rank = (g) => (/nvidia|geforce|quadro|rtx\s|gtx\s/i.test(g.Name) ? 0
+    : /(?<!virtual\s)(amd|radeon|rx\s\d)/i.test(g.Name) ? 1 : 2);
+  usable.sort((a, b) => rank(a) - rank(b));
   const gpu = (usable[0] || gpus[0]) || {};
   const name = String(gpu.Name || '');
   let vendor = 'unknown';

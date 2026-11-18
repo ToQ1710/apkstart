@@ -49,6 +49,73 @@ const { AndroidSettings } = require('./core/android');
 const { Updater, findUninstaller } = require('./core/updater');
 const leftovers = require('./core/leftovers');
 
+// ---------------- 界面语言 / UI language (English · Tiếng Việt · 中文) ----------------
+// Source strings stay in Chinese; everything the user sees from the main process
+// (tray menu, native dialogs, notifications) is translated at display time.
+// Renderer pages translate themselves via ui/i18n.js with the language from i18n:lang.
+const i18n = require('./ui/i18n');
+const I18N_DICT = require('./ui/i18n-dict');
+let uiLanguageSetting = (() => { try { return store.getSettings().uiLanguage || 'auto'; } catch (_) { return 'auto'; } })();
+let _translator = null;
+function uiLang() {
+  let osLocale = '';
+  try { osLocale = app.isReady() ? (app.getPreferredSystemLanguages?.()[0] || app.getLocale()) : ''; } catch (_) { /* ignore */ }
+  return i18n.resolveLang(uiLanguageSetting, osLocale || process.env.LANG || '');
+}
+function tr(s) {
+  const lang = uiLang();
+  if (!_translator || _translator.lang !== lang) _translator = i18n.makeTranslator(lang, I18N_DICT);
+  return _translator.t(s);
+}
+const NO_TR = Symbol('noTranslate');
+{
+  const trMenu = (items) => items.map((it) => {
+    if (!it || typeof it !== 'object' || it[NO_TR]) return it;
+    const o = { ...it };
+    if (typeof o.label === 'string') o.label = tr(o.label);
+    if (typeof o.toolTip === 'string') o.toolTip = tr(o.toolTip);
+    if (Array.isArray(o.submenu)) o.submenu = trMenu(o.submenu);
+    return o;
+  });
+  const buildFromTemplate = Menu.buildFromTemplate.bind(Menu);
+  Menu.buildFromTemplate = (tpl) => buildFromTemplate(Array.isArray(tpl) ? trMenu(tpl) : tpl);
+
+  const trOpts = (o) => {
+    if (!o || typeof o !== 'object' || o instanceof BrowserWindow) return o;
+    const r = { ...o };
+    for (const k of ['title', 'message', 'detail', 'checkboxLabel', 'buttonLabel', 'nameFieldLabel']) {
+      if (typeof r[k] === 'string') r[k] = tr(r[k]);
+    }
+    if (Array.isArray(r.buttons)) r.buttons = r.buttons.map((b) => (typeof b === 'string' ? tr(b) : b));
+    if (Array.isArray(r.filters)) r.filters = r.filters.map((f) => (f && typeof f.name === 'string' ? { ...f, name: tr(f.name) } : f));
+    return r;
+  };
+  for (const fn of ['showMessageBox', 'showMessageBoxSync', 'showOpenDialog', 'showOpenDialogSync', 'showSaveDialog', 'showSaveDialogSync']) {
+    const orig = dialog[fn] && dialog[fn].bind(dialog);
+    if (!orig) continue;
+    try {
+      dialog[fn] = (...args) => (args.length >= 2 ? orig(args[0], trOpts(args[1]), ...args.slice(2)) : orig(trOpts(args[0])));
+    } catch (_) { /* read-only in some Electron builds: dialogs stay untranslated */ }
+  }
+  const showErrorBox = dialog.showErrorBox && dialog.showErrorBox.bind(dialog);
+  if (showErrorBox) {
+    try { dialog.showErrorBox = (title, content) => showErrorBox(tr(String(title || '')), tr(String(content || ''))); } catch (_) { /* ignore */ }
+  }
+}
+ipcMain.on('i18n:lang', (e) => { e.returnValue = uiLang(); });
+ipcMain.handle('i18n:get', () => ({ setting: uiLanguageSetting, lang: uiLang() }));
+ipcMain.handle('i18n:set', (_e, value) => {
+  const v = ['auto', 'en', 'vi', 'zh'].includes(value) ? value : 'auto';
+  uiLanguageSetting = v;
+  store.saveSettings({ uiLanguage: v });
+  _translator = null;
+  // Reload every open page so static markup is re-rendered in the new language.
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { if (!w.isDestroyed() && w.webContents.getURL().startsWith('file:')) w.webContents.reloadIgnoringCache(); } catch (_) { /* ignore */ }
+  }
+  return { setting: v, lang: uiLang() };
+});
+
 // Windows 下窗口被遮挡时 capturePage 会拿到旧帧，自动化截图需要禁用遮挡计算
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
@@ -777,7 +844,7 @@ function notify(title, body) {
   if (store.getSettings().notifyOnInstall === false) return;
   try {
     const { Notification } = require('electron');
-    if (Notification.isSupported()) new Notification({ title, body, icon: nativeImage.createFromBuffer(ICON_PNG) }).show();
+    if (Notification.isSupported()) new Notification({ title: tr(title), body: tr(body), icon: nativeImage.createFromBuffer(ICON_PNG) }).show();
   } catch (_) { /* ignore */ }
 }
 
@@ -811,7 +878,7 @@ function buildTray() {
       { label: '打开 ApkStart', click: () => showWindow() },
       { type: 'separator' },
       ...(apps.length
-        ? apps.map((a) => ({ label: a.label, click: () => runLaunch(a.package) }))
+        ? apps.map((a) => ({ label: a.label, click: () => runLaunch(a.package), [NO_TR]: true }))
         : [{ label: '还没有安装应用', enabled: false }]),
       { type: 'separator' },
       {
@@ -870,8 +937,9 @@ function buildTray() {
       },
     ]);
     tray.setContextMenu(menu);
+    try { tray.setToolTip(tr('ApkStart — 安卓应用运行器')); } catch (_) { /* ignore */ }
   };
-  tray.setToolTip('ApkStart — 安卓应用运行器');
+  tray.setToolTip(tr('ApkStart — 安卓应用运行器'));
   // Windows 托盘的惯例是单击就打开主窗口（双击当然也可以）。
   // 之前只绑了 double-click，用户单击没反应，会以为托盘图标坏了。
   // 右键才出菜单，所以这里单击直接 showWindow 不会和菜单冲突。
@@ -1859,7 +1927,9 @@ function registerIpc() {
       }
     } catch (_) { /* ignore */ }
     try {
-      const r = runtime.emulator.resizeDataPartition(mb);
+      const r = runtime.emulator.resizeDataPartitionAsync
+        ? await runtime.emulator.resizeDataPartitionAsync(mb)
+        : runtime.emulator.resizeDataPartition(mb);
       appLog(`data partition -> ${want}GB: ${JSON.stringify(r)}`);
       if (r && r.ok) notify('数据分区已调整', `安卓可用空间约 ${want} GB${stopped ? '（运行时已重启）' : ''}`);
       return { ok: !!(r && r.ok), stopped, ...r, ...runtime.emulator.dataInfo() };
